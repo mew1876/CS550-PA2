@@ -90,24 +90,30 @@ int main(int argc, char* argv[]) {
 	for (int i = 0; i < nSupers * leavesPerSuper; i++) {
 		//Choose random requests
 		std::unordered_set<int> requestFiles;
-		for (int j = 0; j < requestsPerLeaf; j++) {
+		int possibleRequests = 0;
+		for (int usedNum : used) {
+			if (initialFiles[i].find(usedNum) == initialFiles[i].end()) {
+				possibleRequests++;
+			}
+		}
+		for (int j = 0; j < std::min(requestsPerLeaf, possibleRequests); j++) {
 			int requestNum;
 			do {
 				requestNum = usedVector[std::rand() % usedVector.size()];
-			} while (requestFiles.find(requestNum) != requestFiles.end());
+			} while (requestFiles.find(requestNum) != requestFiles.end() || initialFiles[i].find(requestNum) != initialFiles[i].end());
 			requestFiles.insert(requestNum);
 		}
 		//Build args and spawn leaf
 		std::string args = std::to_string(nextId++) + " " + std::to_string(i % nSupers + 1) + " " + std::to_string(nSupers);
 		for (auto initial : initialFiles[i]) {
-				args += " " + std::to_string(initial);
+				args += " " + std::to_string(initial) + ".txt";
 		}
 		args += " requests";
 		for (auto request : requestFiles) {
-			args += " " + std::to_string(request);
+			args += " " + std::to_string(request) + ".txt";
 		}
 		run(leafPath, args);
-		std::cout << args << std::endl;
+		//std::cout << args << std::endl;
 	}
 	//Wait for all supers to give ready signal
 	std::unique_lock<std::mutex> unique(countLock);

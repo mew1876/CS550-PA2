@@ -50,7 +50,6 @@ int main(int argc, char* argv[]) {
 			break;
 		}
 		std::string fileName(argv[argIndex]);
-		fileName += ".txt";
 		std::ofstream file(getPath() + fileName);
 		file << "Created by leaf " << id << std::endl;
 		std::srand(unsigned int(std::time(nullptr)));
@@ -68,11 +67,9 @@ int main(int argc, char* argv[]) {
 	//Make file requests
 	for (; argIndex < argc; argIndex++) {
 		std::string fileName(argv[argIndex]);
-		fileName += ".txt";
 		std::cout << "Querying for " << fileName << std::endl;
 		std::array<int, 2> messageId = { id, nextMessageId++ };
 		superClient.call("query", id, messageId, nSupers, fileName);
-		std::cout << "Passed the call" << std::endl;
 		queryCount.lock();
 		pendingQueries++;
 		queryCount.unlock();
@@ -86,6 +83,7 @@ int main(int argc, char* argv[]) {
 }
 
 void queryHit(int sender, std::array<int, 2> messageId, int TTL, std::string fileName, std::vector<int> leaves) {
+	std::cout << "Query hit receieved!" << std::endl;
 	std::cout << fileName << " is at: ";
 	for (int leaf : leaves) {
 		std::cout << leaf << " ";

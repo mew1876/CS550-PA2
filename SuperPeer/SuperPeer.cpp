@@ -69,14 +69,17 @@ void query(int sender, std::array<int, 2> messageId, int TTL, std::string fileNa
 			//Reply with queryHit
 			std::cout << "File found! Replying with query hit" << std::endl;
 			rpc::client replyClient("localhost", 8000 + sender);
-			replyClient.call("queryHit", id, messageId, nSupers, fileName, *leaves);
+			replyClient.call("queryHit", id, messageId, nSupers, fileName, leaves->second);
 		}
 		else if (TTL - 1 > 0) {
 			//Forward query to neighbors
+			std::cout << "Forwarding query to neighbors: ";
 			for (int neighborId : neighbors) {
+				std::cout << " " << neighborId;
 				rpc::client forwardClient("localhost", 8000 + neighborId);
 				forwardClient.call("query", id, messageId, TTL - 1, fileName);
 			}
+			std::cout << std::endl;
 		}
 	}
 	//Add new sender to history
