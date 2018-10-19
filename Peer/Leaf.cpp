@@ -4,6 +4,7 @@
 #include <iostream>
 #include <fstream>
 #include <array>
+#include <vector>
 #include <mutex>
 #include <condition_variable>
 
