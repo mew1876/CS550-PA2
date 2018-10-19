@@ -35,7 +35,7 @@ int main(int argc, char* argv[]) {
 	id = std::stoi(argv[0]);
 	nSupers = std::stoi(argv[1]);
 	nChildren = std::stoi(argv[2]);
-	for (int i = 2; i < argc; i++) {
+	for (int i = 3; i < argc; i++) {
 		neighbors.push_back(std::stoi(argv[i]));
 	}
 	std::cout << "Im a super with ID " << id << std::endl;
@@ -67,17 +67,17 @@ void query(int sender, std::array<int, 2> messageId, int TTL, std::string fileNa
 		auto leaves = fileIndex.find(fileName);
 		if (leaves != fileIndex.end()) {
 			//Reply with queryHit
-			std::cout << "File found! Replying with query hit" << std::endl;
+			std::cout << "File found! Replying to " << sender << " about " << fileName << std::endl;
 			rpc::client replyClient("localhost", 8000 + sender);
-			replyClient.call("queryHit", id, messageId, nSupers, fileName, leaves->second);
+			replyClient.async_call("queryHit", id, messageId, nSupers, fileName, leaves->second);
 		}
 		else if (TTL - 1 > 0) {
 			//Forward query to neighbors
-			std::cout << "Forwarding query to neighbors: ";
+			std::cout << "Forwarding query for " << fileName << " to neighbors: ";
 			for (int neighborId : neighbors) {
 				std::cout << " " << neighborId;
 				rpc::client forwardClient("localhost", 8000 + neighborId);
-				forwardClient.call("query", id, messageId, TTL - 1, fileName);
+				forwardClient.async_call("query", id, messageId, TTL , fileName);
 			}
 			std::cout << std::endl;
 		}
@@ -87,14 +87,17 @@ void query(int sender, std::array<int, 2> messageId, int TTL, std::string fileNa
 }
 
 void queryHit(int sender, std::array<int, 2> messageId, int TTL, std::string fileName, std::vector<int> leaves) {
+	std::cout << "Propagating hit for " << fileName << " to: ";
 	auto senders = messageHistory.find(messageId);
 	if (senders != messageHistory.end() && TTL - 1 > 0) {
 		//Forward queryHit to anyone who sent query with messageId
 		for (int querySenderId : senders->second) {
+			std::cout << querySenderId << " ";
 			rpc::client forwardClient("localhost", 8000 + querySenderId);
-			forwardClient.call("queryHit", id, messageId, TTL - 1, fileName, leaves);
+			forwardClient.async_call("queryHit", id, messageId, TTL, fileName, leaves);
 		}
 	}
+	std::cout << std::endl;
 }
 
 void add(int leafId, std::string fileName) {
