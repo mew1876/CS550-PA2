@@ -15,7 +15,7 @@
     </Filter>
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="Gnutella.cpp">
+    <ClCompile Include="Leaf.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
   </ItemGroup>
