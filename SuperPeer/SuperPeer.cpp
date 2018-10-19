@@ -13,12 +13,14 @@
 void query(int sender, std::array<int, 2> messageId, int TTL, std::string fileName);
 void queryHit(int sender, std::array<int, 2> messageId, int TTL, std::string fileName, std::vector<int> leaves);
 void add(int leafId, std::string fileName);
+rpc::client& getClient(int id);
 void leafReady();
 void end();
 void dumpIndex();
 
 int id, nSupers, nChildren;
-std::vector<int> neighbors;
+std::unordered_map<int, rpc::client> neighborClients;
+std::unordered_map<int, rpc::client> leafClients;
 std::unordered_map<std::string, std::vector<int>> fileIndex;
 std::map<std::array<int, 2>, std::unordered_set<int>> messageHistory;
 
@@ -36,7 +38,7 @@ int main(int argc, char* argv[]) {
 	nSupers = std::stoi(argv[1]);
 	nChildren = std::stoi(argv[2]);
 	for (int i = 3; i < argc; i++) {
-		neighbors.push_back(std::stoi(argv[i]));
+		neighborClients.emplace(std::piecewise_construct, std::forward_as_tuple(std::stoi(argv[i])), std::forward_as_tuple("localhost", 8000 + std::stoi(argv[i])));
 	}
 	std::cout << "Im a super with ID " << id << std::endl;
 	//Start server for file registrations, ready signals, queries, queryhits, and end signal
@@ -68,16 +70,14 @@ void query(int sender, std::array<int, 2> messageId, int TTL, std::string fileNa
 		if (leaves != fileIndex.end()) {
 			//Reply with queryHit
 			std::cout << "File found! Replying to " << sender << " about " << fileName << std::endl;
-			rpc::client replyClient("localhost", 8000 + sender);
-			replyClient.async_call("queryHit", id, messageId, nSupers, fileName, leaves->second);
+			getClient(sender).async_call("queryHit", id, messageId, nSupers, fileName, leaves->second);
 		}
 		else if (TTL - 1 > 0) {
 			//Forward query to neighbors
 			std::cout << "Forwarding query for " << fileName << " to neighbors: ";
-			for (int neighborId : neighbors) {
-				std::cout << " " << neighborId;
-				rpc::client forwardClient("localhost", 8000 + neighborId);
-				forwardClient.async_call("query", id, messageId, TTL , fileName);
+			for (auto &neighbor : neighborClients) {
+				std::cout << " " << neighbor.first;
+				neighbor.second.async_call("query", id, messageId, TTL - 1, fileName);
 			}
 			std::cout << std::endl;
 		}
@@ -93,8 +93,7 @@ void queryHit(int sender, std::array<int, 2> messageId, int TTL, std::string fil
 		//Forward queryHit to anyone who sent query with messageId
 		for (int querySenderId : senders->second) {
 			std::cout << querySenderId << " ";
-			rpc::client forwardClient("localhost", 8000 + querySenderId);
-			forwardClient.async_call("queryHit", id, messageId, TTL, fileName, leaves);
+			getClient(querySenderId).async_call("queryHit", id, messageId, TTL - 1, fileName, leaves);
 		}
 	}
 	std::cout << std::endl;
@@ -106,6 +105,21 @@ void add(int leafId, std::string fileName) {
 	if (std::find(leaves.begin(), leaves.end(), leafId) == leaves.end()) {
 		leaves.push_back(leafId);
 	}
+}
+
+rpc::client& getClient(int clientId) {
+	//Return a client - neighbor or leaf
+	const auto neighborIter = neighborClients.find(clientId);
+	if (neighborIter != neighborClients.end()) {
+		return neighborIter->second;
+	}
+	const auto leafIter = leafClients.find(clientId);
+	if (leafIter != leafClients.end()) {
+		return leafIter->second;
+	}
+	//If the client doesn't exist yet, we assume its a leaf
+	leafClients.emplace(std::piecewise_construct, std::forward_as_tuple(clientId), std::forward_as_tuple("localhost", 8000 + clientId));
+	return leafClients.find(clientId)->second;
 }
 
 void leafReady() {

@@ -5,6 +5,7 @@
 #include <fstream>
 #include <array>
 #include <vector>
+#include <unordered_set>
 #include <mutex>
 #include <condition_variable>
 
@@ -17,6 +18,7 @@ std::string getPath();
 int id, superId, nSupers;
 int nextMessageId = 0;
 int pendingQueries = 0;
+std::unordered_set<std::string> retrievedFiles;
 
 bool canStart = false, canEnd = false;
 std::mutex waitLock;
@@ -75,7 +77,9 @@ int main(int argc, char* argv[]) {
 		pendingQueries++;
 		queryCount.unlock();
 	}
+	std::cout << "WAITING" << std::endl;
 	ready.wait(unique, [] { return pendingQueries == 0; });
+	std::cout << "DONE" << std::endl;
 	//Send complete signal to system
 	rpc::client sysClient("localhost", 8000);
 	sysClient.call("complete");
@@ -90,8 +94,13 @@ void queryHit(int sender, std::array<int, 2> messageId, int TTL, std::string fil
 	}
 	std::cout << std::endl;
 	queryCount.lock();
-	pendingQueries--;
+	if (retrievedFiles.find(fileName) == retrievedFiles.end()) {
+		retrievedFiles.insert(fileName);
+		pendingQueries--;
+	}
+	std::cout << "Pending queries: " << pendingQueries << std::endl;
 	queryCount.unlock();
+	ready.notify_one();
 }
 
 std::vector<uint8_t> obtain(std::string fileName) {
