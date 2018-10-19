@@ -18,7 +18,7 @@ void leafComplete();
 void copyAppend(char *source, char *destination, int destSize, std::string extra);
 void run(LPCSTR name, std::string args);
 
-int nSupers = 2, leavesPerSuper = 2, filesPerLeaf = 10, requestsPerLeaf = 10, topology = ALL_TO_ALL, duplicationFactor = 2;
+int nSupers = 3, leavesPerSuper = 1, filesPerLeaf = 10, requestsPerLeaf = 10, topology = ALL_TO_ALL, duplicationFactor = 2;
 
 int readyCount = 0, completeCount = 0;
 std::mutex countLock;

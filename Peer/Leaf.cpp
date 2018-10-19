@@ -83,7 +83,6 @@ int main(int argc, char* argv[]) {
 }
 
 void queryHit(int sender, std::array<int, 2> messageId, int TTL, std::string fileName, std::vector<int> leaves) {
-	std::cout << "Query hit receieved!" << std::endl;
 	std::cout << fileName << " is at: ";
 	for (int leaf : leaves) {
 		std::cout << leaf << " ";
