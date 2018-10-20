@@ -95,38 +95,40 @@ int main(int argc, char* argv[]) {
 
 void query(int sender, std::array<int, 2> messageId, int TTL, std::string fileName) {
 	historyLock.lock();
-	std::cout << "Query from " << sender << " for " << fileName << std::endl;
-	//If we've seen the message before, skip query handling
-	std::unordered_set<int> &senders = messageHistory[messageId];
-	if (senders.empty()) {
-		//Check own index for the file
-		auto leaves = fileIndex.find(fileName);
-		if (leaves != fileIndex.end()) {
-			//Reply with queryHit
-			std::cout << "File found! Replying to " << sender << " about " << fileName << std::endl;
-			getClient(sender)->async_call("queryHit", id, messageId, nSupers, fileName, leaves->second);
-		}
-		else if (TTL - 1 > 0) {
-			//Forward query to neighbors
-			std::cout << "Forwarding query for " << fileName << " to neighbors: ";
-			for (auto &neighbor : neighborClients) {
-				if (neighbor.first != sender) {
-					std::cout << " " << neighbor.first;
-					neighbor.second->async_call("query", id, messageId, TTL - 1, fileName);
-				}
+	if (queryHitIds.find(messageId) == queryHitIds.end()) {
+		//If we've seen the message before, skip query handling
+		std::unordered_set<int> &senders = messageHistory[messageId];
+		if (senders.empty()) {
+			//Check own index for the file
+			auto leaves = fileIndex.find(fileName);
+			if (leaves != fileIndex.end()) {
+				//Reply with queryHit
+				//std::cout << "File found! Replying to " << sender << " about " << fileName << std::endl;
+				getClient(sender)->async_call("queryHit", id, messageId, nSupers, fileName, leaves->second);
+				queryHitIds.insert(messageId);
 			}
-			std::cout << std::endl;
+			else if (TTL - 1 > 0) {
+				//Forward query to neighbors
+				//std::cout << "Forwarding query for " << fileName << " to neighbors: ";
+				for (auto &neighbor : neighborClients) {
+					if (neighbor.first != sender) {
+						std::cout << " " << neighbor.first;
+						neighbor.second->async_call("query", id, messageId, TTL - 1, fileName);
+					}
+				}
+				std::cout << std::endl;
+			}
 		}
+		//Add new sender to history
+		senders.insert(sender);
 	}
-	//Add new sender to history
-	senders.insert(sender);
 	historyLock.unlock();
 }
 
 void queryHit(int sender, std::array<int, 2> messageId, int TTL, std::string fileName, std::vector<int> leaves) {
 	historyLock.lock();
 	if (queryHitIds.find(messageId) == queryHitIds.end()) {
-		std::cout << "Propagating hit for " << fileName << " to: ";
+		//std::cout << "Propagating hit for " << fileName << " to: ";
 		auto senders = messageHistory.find(messageId);
 		if (senders != messageHistory.end() && TTL - 1 > 0) {
 			//Forward queryHit to anyone who sent query with messageId
