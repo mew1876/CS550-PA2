@@ -43,7 +43,7 @@ int main(int argc, char* argv[]) {
 	server.bind("queryHit", &queryHit);
 	server.bind("obtain", &obtain);
 	server.bind("end", &end);
-	server.async_run(1);
+	server.async_run(4);
 	//Create super client
 	rpc::client *superClient = new rpc::client("localhost", 8000 + superId);
 	superClient->set_timeout(50);
@@ -60,6 +60,7 @@ int main(int argc, char* argv[]) {
 			delete superClient;
 			superClient = new rpc::client("localhost", 8000 + superId);
 			superClient->set_timeout(50);
+			t; //Silence warning
 		}
 	}
 	superClient->clear_timeout();
@@ -97,9 +98,7 @@ int main(int argc, char* argv[]) {
 		pendingQueries++;
 		queryCount.unlock();
 	}
-	std::cout << "WAITING" << std::endl;
 	ready.wait(unique, [] { return pendingQueries == 0; });
-	std::cout << "DONE" << std::endl;
 	//Send complete signal to system
 	rpc::client sysClient("localhost", 8000);
 	sysClient.call("complete");
@@ -116,10 +115,21 @@ void queryHit(int sender, std::array<int, 2> messageId, int TTL, std::string fil
 	std::cout << std::endl;
 	queryCount.lock();
 	if (retrievedFiles.find(fileName) == retrievedFiles.end()) {
+		//Got the location of an unobtained file
 		retrievedFiles.insert(fileName);
 		pendingQueries--;
+		try {
+			int sourceId = leaves[std::rand() % leaves.size()];
+			rpc::client sourceClient("localhost", 8000 + sourceId);
+			std::vector<uint8_t> bytes = sourceClient.call("obtain", fileName).as<std::vector<uint8_t>>();
+			std::ofstream destination(getPath() + fileName, std::ios::binary);
+			destination.write((char *)bytes.data(), bytes.size());
+			std::cout << "Downloaded " << fileName << " from " << sourceId << std::endl;
+		}
+		catch (...) {
+			//Error writing file
+		}
 	}
-	std::cout << "Pending queries: " << pendingQueries << std::endl;
 	queryCount.unlock();
 	ready.notify_one();
 }

@@ -1,11 +1,13 @@
 #include "rpc/server.h"
 #include "rpc/client.h"
+#include "rpc/rpc_error.h"
 #include <iostream>
 #include <vector>
 #include <array>
 #include <unordered_map>
 #include <map>
 #include <unordered_set>
+#include <set>
 #include <algorithm>
 #include <mutex>
 #include <condition_variable>
@@ -13,17 +15,19 @@
 void query(int sender, std::array<int, 2> messageId, int TTL, std::string fileName);
 void queryHit(int sender, std::array<int, 2> messageId, int TTL, std::string fileName, std::vector<int> leaves);
 void add(int leafId, std::string fileName);
-rpc::client& getClient(int id);
+rpc::client* getClient(int id);
 void leafReady();
 void end();
 void ping();
 void dumpIndex();
 
 int id, nSupers, nChildren;
-std::unordered_map<int, rpc::client> neighborClients;
-std::unordered_map<int, rpc::client> leafClients;
+std::unordered_map<int, rpc::client*> neighborClients;
+std::unordered_map<int, rpc::client*> leafClients;
+
 std::unordered_map<std::string, std::vector<int>> fileIndex;
 std::map<std::array<int, 2>, std::unordered_set<int>> messageHistory;
+std::set<std::array<int, 2>> queryHitIds;
 
 int readyCount = 0;
 bool canEnd;
@@ -40,9 +44,6 @@ int main(int argc, char* argv[]) {
 	id = std::stoi(argv[0]);
 	nSupers = std::stoi(argv[1]);
 	nChildren = std::stoi(argv[2]);
-	for (int i = 3; i < argc; i++) {
-		neighborClients.emplace(std::piecewise_construct, std::forward_as_tuple(std::stoi(argv[i])), std::forward_as_tuple("localhost", 8000 + std::stoi(argv[i])));
-	}
 	//Start server for file registrations, pings, ready signals, queries, queryhits, and end signal
 	rpc::server server(8000 + id);
 	server.bind("ready", &leafReady);
@@ -53,6 +54,28 @@ int main(int argc, char* argv[]) {
 	server.bind("end", &end);
 	server.async_run(4);
 	std::cout << "Im a super with ID " << id << std::endl;
+	//Create clients for neighbors once they're online
+	for (int i = 3; i < argc; i++) {
+		int neighborId = std::stoi(argv[i]);
+		rpc::client *neighborClient = new rpc::client("localhost", 8000 + neighborId);
+		neighborClient->set_timeout(50);
+		//Ping server until it responds
+		while (true) {
+			try {
+				neighborClient->call("ping");
+				break;
+			}
+			catch (rpc::timeout &t) {
+				//Ping timed out, try restarting client
+				delete neighborClient;
+				neighborClient = new rpc::client("localhost", 8000 + neighborId);
+				neighborClient->set_timeout(50);
+				t; //Silence warning
+			}
+		}
+		neighborClient->clear_timeout();
+		neighborClients.insert({ neighborId, neighborClient });
+	}
 	//Wait for all children to give ready signal
 	std::unique_lock<std::mutex> unique(countLock);
 	ready.wait(unique, [] { return readyCount >= nChildren; });
@@ -60,13 +83,18 @@ int main(int argc, char* argv[]) {
 	//Send ready signal to system
 	rpc::client sysClient("localhost", 8000);
 	sysClient.call("ready");
-	//Wait for kill signal
+	//Wait for end signal
 	ready.wait(unique, [] { return canEnd; });
+	for (auto client : neighborClients) {
+		delete client.second;
+	}
+	for (auto client : leafClients) {
+		delete client.second;
+	}
 }
 
 void query(int sender, std::array<int, 2> messageId, int TTL, std::string fileName) {
 	historyLock.lock();
-	indexLock.lock();
 	std::cout << "Query from " << sender << " for " << fileName << std::endl;
 	//If we've seen the message before, skip query handling
 	std::unordered_set<int> &senders = messageHistory[messageId];
@@ -76,7 +104,7 @@ void query(int sender, std::array<int, 2> messageId, int TTL, std::string fileNa
 		if (leaves != fileIndex.end()) {
 			//Reply with queryHit
 			std::cout << "File found! Replying to " << sender << " about " << fileName << std::endl;
-			getClient(sender).async_call("queryHit", id, messageId, nSupers, fileName, leaves->second);
+			getClient(sender)->async_call("queryHit", id, messageId, nSupers, fileName, leaves->second);
 		}
 		else if (TTL - 1 > 0) {
 			//Forward query to neighbors
@@ -84,7 +112,7 @@ void query(int sender, std::array<int, 2> messageId, int TTL, std::string fileNa
 			for (auto &neighbor : neighborClients) {
 				if (neighbor.first != sender) {
 					std::cout << " " << neighbor.first;
-					neighbor.second.async_call("query", id, messageId, TTL - 1, fileName);
+					neighbor.second->async_call("query", id, messageId, TTL - 1, fileName);
 				}
 			}
 			std::cout << std::endl;
@@ -92,24 +120,25 @@ void query(int sender, std::array<int, 2> messageId, int TTL, std::string fileNa
 	}
 	//Add new sender to history
 	senders.insert(sender);
-	indexLock.unlock();
 	historyLock.unlock();
 }
 
 void queryHit(int sender, std::array<int, 2> messageId, int TTL, std::string fileName, std::vector<int> leaves) {
 	historyLock.lock();
-	std::cout << "Propagating hit for " << fileName << " to: ";
-	auto senders = messageHistory.find(messageId);
-	if (senders != messageHistory.end() && TTL - 1 > 0) {
-		//Forward queryHit to anyone who sent query with messageId
-		for (int querySenderId : senders->second) {
-			if (senders->first[0] != sender) {
-				std::cout << querySenderId << " ";
-				getClient(querySenderId).async_call("queryHit", id, messageId, TTL - 1, fileName, leaves);
+	if (queryHitIds.find(messageId) == queryHitIds.end()) {
+		std::cout << "Propagating hit for " << fileName << " to: ";
+		auto senders = messageHistory.find(messageId);
+		if (senders != messageHistory.end() && TTL - 1 > 0) {
+			//Forward queryHit to anyone who sent query with messageId
+			for (int querySenderId : senders->second) {
+				if (senders->first[0] != sender) {
+					std::cout << querySenderId << " ";
+					getClient(querySenderId)->async_call("queryHit", id, messageId, TTL - 1, fileName, leaves);
+				}
 			}
 		}
+		queryHitIds.insert(messageId);
 	}
-	std::cout << "TTL: " << TTL << std::endl;
 	historyLock.unlock();
 }
 
@@ -123,7 +152,7 @@ void add(int leafId, std::string fileName) {
 	indexLock.unlock();
 }
 
-rpc::client& getClient(int clientId) {
+rpc::client* getClient(int clientId) {
 	//Return a client - neighbor or leaf
 	const auto neighborIter = neighborClients.find(clientId);
 	if (neighborIter != neighborClients.end()) {
@@ -134,7 +163,8 @@ rpc::client& getClient(int clientId) {
 		return leafIter->second;
 	}
 	//If the client doesn't exist yet, we assume its a leaf
-	leafClients.emplace(std::piecewise_construct, std::forward_as_tuple(clientId), std::forward_as_tuple("localhost", 8000 + clientId));
+	rpc::client *client = new rpc::client("localhost", 8000 + clientId);
+	leafClients.insert({ clientId, client });
 	return leafClients.find(clientId)->second;
 }
 

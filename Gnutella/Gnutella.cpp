@@ -18,7 +18,7 @@ void leafComplete();
 void copyAppend(char *source, char *destination, int destSize, std::string extra);
 void run(LPCSTR name, std::string args);
 
-int nSupers = 4, leavesPerSuper = 5, filesPerLeaf = 10, requestsPerLeaf = 10, topology = ALL_TO_ALL, duplicationFactor = 2;
+int nSupers = 10, leavesPerSuper = 5, filesPerLeaf = 10, requestsPerLeaf = 10, topology = ALL_TO_ALL, duplicationFactor = 2;
 
 int readyCount = 0, completeCount = 0;
 std::mutex countLock;
@@ -138,12 +138,17 @@ int main(int argc, char* argv[]) {
 	std::chrono::duration<double> duration = std::chrono::high_resolution_clock::now() - startTime;
 	std::cout << totalRequests << " requests took " << duration.count() << " seconds. R/s = " << std::to_string(totalRequests / duration.count()) << std::endl;
 	//Send end signal to all supers and leaves
+	std::vector<rpc::client*> clients;
 	for (int i = 1; i < nextId; i++) {
-		rpc::client sysClient("localhost", 8000 + i);
-		sysClient.call("end");
+		rpc::client *client = new rpc::client("localhost", 8000 + i);
+		clients.push_back(client);
+		client->async_call("end");
 	}
 	std::cout << "Press Enter to exit" << std::endl;
 	std::cin.get();
+	for (auto client : clients) {
+		delete client;
+	}
 }
 
 void superReady() {
