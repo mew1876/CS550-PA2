@@ -18,7 +18,7 @@ void leafComplete();
 void copyAppend(char *source, char *destination, int destSize, std::string extra);
 void run(LPCSTR name, std::string args);
 
-int nSupers = 3, leavesPerSuper = 1, filesPerLeaf = 10, requestsPerLeaf = 10, topology = ALL_TO_ALL, duplicationFactor = 2;
+int nSupers = 4, leavesPerSuper = 5, filesPerLeaf = 10, requestsPerLeaf = 10, topology = ALL_TO_ALL, duplicationFactor = 2;
 
 int readyCount = 0, completeCount = 0;
 std::mutex countLock;
@@ -68,6 +68,7 @@ int main(int argc, char* argv[]) {
 			}
 		}
 		run(superPath, args);
+		//std::cout << "Super args: " << args << std::endl;
 	}
 	//Spawn leaves: ID, superID, nSupers, [initial files...], "requests", [requests...]
 	std::vector<int> numbers(nSupers * leavesPerSuper * filesPerLeaf / duplicationFactor);
@@ -87,16 +88,19 @@ int main(int argc, char* argv[]) {
 		}		
 	}	
 	std::vector<int> usedVector(used.begin(), used.end());
+	int totalRequests = 0;
 	for (int i = 0; i < nSupers * leavesPerSuper; i++) {
 		//Choose random requests
 		std::unordered_set<int> requestFiles;
-		int possibleRequests = 0;
+		int numRequests = 0;
 		for (int usedNum : used) {
 			if (initialFiles[i].find(usedNum) == initialFiles[i].end()) {
-				possibleRequests++;
+				numRequests++;
 			}
 		}
-		for (int j = 0; j < std::min(requestsPerLeaf, possibleRequests); j++) {
+		numRequests = std::min(requestsPerLeaf, numRequests);
+		totalRequests += numRequests;
+		for (int j = 0; j < numRequests; j++) {
 			int requestNum;
 			do {
 				requestNum = usedVector[std::rand() % usedVector.size()];
@@ -132,7 +136,7 @@ int main(int argc, char* argv[]) {
 	std::cout << "Leaves have finished" << std::endl;
 	//End timer
 	std::chrono::duration<double> duration = std::chrono::high_resolution_clock::now() - startTime;
-	std::cout << "Leaf requests took " << duration.count() << " seconds" << std::endl;
+	std::cout << totalRequests << " requests took " << duration.count() << " seconds. R/s = " << std::to_string(totalRequests / duration.count()) << std::endl;
 	//Send end signal to all supers and leaves
 	for (int i = 1; i < nextId; i++) {
 		rpc::client sysClient("localhost", 8000 + i);

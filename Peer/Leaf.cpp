@@ -1,6 +1,7 @@
 #include "rpc/server.h"
 #include "rpc/client.h"
 #include "rpc/this_handler.h"
+#include "rpc/rpc_error.h"
 #include <iostream>
 #include <fstream>
 #include <array>
@@ -8,6 +9,8 @@
 #include <unordered_set>
 #include <mutex>
 #include <condition_variable>
+#include <chrono>
+#include <thread>
 
 void queryHit(int sender, std::array<int, 2> messageId, int TTL, std::string fileName, std::vector<int> leaves);
 std::vector<uint8_t> obtain(std::string fileName);
@@ -42,7 +45,24 @@ int main(int argc, char* argv[]) {
 	server.bind("end", &end);
 	server.async_run(1);
 	//Create super client
-	rpc::client superClient("localhost", 8000 + superId);
+	rpc::client *superClient = new rpc::client("localhost", 8000 + superId);
+	superClient->set_timeout(50);
+	//Ping server until it responds
+	while (true) {
+		try {
+			std::cout << "Pinging" << std::endl;
+			superClient->call("ping");
+			std::cout << "Ping was successful" << std::endl;
+			break;
+		}
+		catch (rpc::timeout &t) {
+			//Ping timed out, try restarting client
+			delete superClient;
+			superClient = new rpc::client("localhost", 8000 + superId);
+			superClient->set_timeout(50);
+		}
+	}
+	superClient->clear_timeout();
 	//Create init files & add to super index
 	CreateDirectory("Leaves", NULL);
 	CreateDirectory(getPath().c_str(), NULL);
@@ -60,10 +80,10 @@ int main(int argc, char* argv[]) {
 			file << char((std::rand() % 95) + 32);
 		}
 		file.close();
-		superClient.call("add", id, fileName);
+		superClient->call("add", id, fileName);
 	}
 	//Send ready signal to super
-	superClient.call("ready");
+	superClient->call("ready");
 	//Wait for start signal
 	std::unique_lock<std::mutex> unique(waitLock);
 	ready.wait(unique, [] { return canStart; });
@@ -72,7 +92,7 @@ int main(int argc, char* argv[]) {
 		std::string fileName(argv[argIndex]);
 		std::cout << "Querying for " << fileName << std::endl;
 		std::array<int, 2> messageId = { id, nextMessageId++ };
-		superClient.call("query", id, messageId, nSupers, fileName);
+		superClient->async_call("query", id, messageId, nSupers, fileName);
 		queryCount.lock();
 		pendingQueries++;
 		queryCount.unlock();
@@ -83,6 +103,7 @@ int main(int argc, char* argv[]) {
 	//Send complete signal to system
 	rpc::client sysClient("localhost", 8000);
 	sysClient.call("complete");
+	delete superClient;
 	//Wait for kill signal
 	ready.wait(unique, [] { return canEnd; });
 }

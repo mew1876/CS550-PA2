@@ -16,6 +16,7 @@ void add(int leafId, std::string fileName);
 rpc::client& getClient(int id);
 void leafReady();
 void end();
+void ping();
 void dumpIndex();
 
 int id, nSupers, nChildren;
@@ -27,6 +28,8 @@ std::map<std::array<int, 2>, std::unordered_set<int>> messageHistory;
 int readyCount = 0;
 bool canEnd;
 std::mutex countLock;
+std::mutex historyLock;
+std::mutex indexLock;
 std::condition_variable ready;
 
 int main(int argc, char* argv[]) {
@@ -40,15 +43,16 @@ int main(int argc, char* argv[]) {
 	for (int i = 3; i < argc; i++) {
 		neighborClients.emplace(std::piecewise_construct, std::forward_as_tuple(std::stoi(argv[i])), std::forward_as_tuple("localhost", 8000 + std::stoi(argv[i])));
 	}
-	std::cout << "Im a super with ID " << id << std::endl;
-	//Start server for file registrations, ready signals, queries, queryhits, and end signal
+	//Start server for file registrations, pings, ready signals, queries, queryhits, and end signal
 	rpc::server server(8000 + id);
 	server.bind("ready", &leafReady);
 	server.bind("add", &add);
 	server.bind("query", &query);
 	server.bind("queryHit", &queryHit);
+	server.bind("ping", &ping);
 	server.bind("end", &end);
-	server.async_run(1);
+	server.async_run(4);
+	std::cout << "Im a super with ID " << id << std::endl;
 	//Wait for all children to give ready signal
 	std::unique_lock<std::mutex> unique(countLock);
 	ready.wait(unique, [] { return readyCount >= nChildren; });
@@ -61,6 +65,8 @@ int main(int argc, char* argv[]) {
 }
 
 void query(int sender, std::array<int, 2> messageId, int TTL, std::string fileName) {
+	historyLock.lock();
+	indexLock.lock();
 	std::cout << "Query from " << sender << " for " << fileName << std::endl;
 	//If we've seen the message before, skip query handling
 	std::unordered_set<int> &senders = messageHistory[messageId];
@@ -76,35 +82,45 @@ void query(int sender, std::array<int, 2> messageId, int TTL, std::string fileNa
 			//Forward query to neighbors
 			std::cout << "Forwarding query for " << fileName << " to neighbors: ";
 			for (auto &neighbor : neighborClients) {
-				std::cout << " " << neighbor.first;
-				neighbor.second.async_call("query", id, messageId, TTL - 1, fileName);
+				if (neighbor.first != sender) {
+					std::cout << " " << neighbor.first;
+					neighbor.second.async_call("query", id, messageId, TTL - 1, fileName);
+				}
 			}
 			std::cout << std::endl;
 		}
 	}
 	//Add new sender to history
 	senders.insert(sender);
+	indexLock.unlock();
+	historyLock.unlock();
 }
 
 void queryHit(int sender, std::array<int, 2> messageId, int TTL, std::string fileName, std::vector<int> leaves) {
+	historyLock.lock();
 	std::cout << "Propagating hit for " << fileName << " to: ";
 	auto senders = messageHistory.find(messageId);
 	if (senders != messageHistory.end() && TTL - 1 > 0) {
 		//Forward queryHit to anyone who sent query with messageId
 		for (int querySenderId : senders->second) {
-			std::cout << querySenderId << " ";
-			getClient(querySenderId).async_call("queryHit", id, messageId, TTL - 1, fileName, leaves);
+			if (senders->first[0] != sender) {
+				std::cout << querySenderId << " ";
+				getClient(querySenderId).async_call("queryHit", id, messageId, TTL - 1, fileName, leaves);
+			}
 		}
 	}
-	std::cout << std::endl;
+	std::cout << "TTL: " << TTL << std::endl;
+	historyLock.unlock();
 }
 
 void add(int leafId, std::string fileName) {
+	indexLock.lock();
 	std::cout << "File registered: " << leafId << " has " << fileName << std::endl;
 	std::vector<int> &leaves = fileIndex[fileName];
 	if (std::find(leaves.begin(), leaves.end(), leafId) == leaves.end()) {
 		leaves.push_back(leafId);
 	}
+	indexLock.unlock();
 }
 
 rpc::client& getClient(int clientId) {
@@ -134,6 +150,8 @@ void end() {
 	canEnd = true;
 	ready.notify_one();
 }
+
+void ping() {}
 
 void dumpIndex() {
 	std::cout << "Dump:" << std::endl;
