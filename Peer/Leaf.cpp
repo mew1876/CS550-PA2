@@ -13,29 +13,34 @@
 #include <thread>
 
 void queryHit(int sender, std::array<int, 2> messageId, int TTL, std::string fileName, std::vector<int> leaves);
+void copyFile(int sourceId, std::string fileName);
 std::vector<uint8_t> obtain(std::string fileName);
+rpc::client* getClient(int clientId);
 void start();
 void end();
 std::string getPath();
 
-int id, superId, nSupers;
+int id, superId, nSupers, startTTL;
 int nextMessageId = 0;
 int pendingQueries = 0;
 std::unordered_set<std::string> retrievedFiles;
+std::unordered_map<int, rpc::client*> leafClients;
 
 bool canStart = false, canEnd = false;
 std::mutex waitLock;
 std::mutex queryCount;
+std::mutex clientsLock;
 std::condition_variable ready;
 
 int main(int argc, char* argv[]) {
 	//Parse args for ID, files to start with, files to request
-	if (argc < 3) {
+	if (argc < 4) {
 		return -1;
 	}
 	id = std::stoi(argv[0]);
 	superId = std::stoi(argv[1]);
 	nSupers = std::stoi(argv[2]);
+	startTTL = std::stoi(argv[3]);
 	std::cout << "Im a leaf with ID " << id << " and my super's ID is " << superId << std::endl;
 	//Start server for start, obtain, and end signals
 	rpc::server server(8000 + id);
@@ -68,7 +73,7 @@ int main(int argc, char* argv[]) {
 	CreateDirectory("Leaves", NULL);
 	CreateDirectory(getPath().c_str(), NULL);
 	int argIndex;
-	for (argIndex = 3; argIndex < argc; argIndex++) {
+	for (argIndex = 4; argIndex < argc; argIndex++) {
 		if (strcmp(argv[argIndex], std::string("requests").c_str()) == 0) {
 			argIndex++;
 			break;
@@ -93,7 +98,7 @@ int main(int argc, char* argv[]) {
 		std::string fileName(argv[argIndex]);
 		std::cout << "Querying for " << fileName << std::endl;
 		std::array<int, 2> messageId = { id, nextMessageId++ };
-		superClient->async_call("query", id, messageId, nSupers, fileName);
+		superClient->async_call("query", id, messageId, startTTL, fileName);
 		queryCount.lock();
 		pendingQueries++;
 		queryCount.unlock();
@@ -108,33 +113,34 @@ int main(int argc, char* argv[]) {
 }
 
 void queryHit(int sender, std::array<int, 2> messageId, int TTL, std::string fileName, std::vector<int> leaves) {
-/*	std::cout << fileName << " is at: ";
-	for (int leaf : leaves) {
-		std::cout << leaf << " ";
-	}
-	std::cout << std::endl*/;
-	queryCount.lock();
 	if (retrievedFiles.find(fileName) == retrievedFiles.end()) {
 		//Got the location of an unobtained file
 		retrievedFiles.insert(fileName);
-		pendingQueries--;
 		try {
 			int sourceId = leaves[std::rand() % leaves.size()];
-			rpc::client sourceClient("localhost", 8000 + sourceId);
-			std::vector<uint8_t> bytes = sourceClient.call("obtain", fileName).as<std::vector<uint8_t>>();
-			std::ofstream destination(getPath() + fileName, std::ios::binary);
-			destination.write((char *)bytes.data(), bytes.size());
-			std::cout << "Downloaded " << fileName << " from " << sourceId << std::endl;
+			std::cout << "Sending file request to " << sourceId << " for " << fileName << std::endl;
+			std::thread(copyFile, sourceId, fileName).detach();
 		}
 		catch (...) {
 			//Error writing file
+			std::cout << "Failed to download " << fileName << std::endl;
 		}
 	}
+}
+
+void copyFile(int sourceId, std::string fileName) {
+	std::vector<uint8_t> bytes = getClient(sourceId)->call("obtain", fileName).as<std::vector<uint8_t>>();
+	std::ofstream destination(getPath() + fileName, std::ios::binary);
+	destination.write((char *)bytes.data(), bytes.size());
+	std::cout << "Downloaded " << fileName << " from " << sourceId << std::endl;
+	queryCount.lock();
+	pendingQueries--;
 	queryCount.unlock();
 	ready.notify_one();
 }
 
 std::vector<uint8_t> obtain(std::string fileName) {
+	std::cout << "Obtain request for " << fileName << std::endl;
 	//Returns specified file as a vector of bytes
 	try {
 		std::ifstream file(getPath() + fileName, std::ios::binary);
@@ -156,6 +162,22 @@ std::vector<uint8_t> obtain(std::string fileName) {
 		return {};
 	}
 }
+
+rpc::client* getClient(int clientId) {
+	//Return a client for clientId
+	//clientsLock.lock();
+	const auto leafIter = leafClients.find(clientId);
+	if (leafIter != leafClients.end()) {
+		//std::cout << "leaf" << std::endl;
+		return leafIter->second;
+	}
+	//If the client doesn't exist yet make a new one
+	rpc::client *client = new rpc::client("localhost", 8000 + clientId);
+	leafClients.insert({ clientId, client });
+	//clientsLock.unlock();
+	return client;
+}
+
 
 void start() {
 	canStart = true;

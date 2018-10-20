@@ -18,7 +18,7 @@ void leafComplete();
 void copyAppend(char *source, char *destination, int destSize, std::string extra);
 void run(LPCSTR name, std::string args);
 
-int nSupers = 10, leavesPerSuper = 5, filesPerLeaf = 10, requestsPerLeaf = 10, topology = ALL_TO_ALL, duplicationFactor = 2;
+int nSupers = 10, leavesPerSuper = 5, filesPerLeaf = 10, requestsPerLeaf = 10, topology = ALL_TO_ALL, TTL, duplicationFactor = 2;
 
 int readyCount = 0, completeCount = 0;
 std::mutex countLock;
@@ -34,6 +34,12 @@ int main(int argc, char* argv[]) {
 		topology = std::stoi(argv[5]);
 		duplicationFactor = std::stoi(argv[6]);
 	}
+	if (topology == ALL_TO_ALL) {
+		TTL = 2;
+	}
+	else {
+		TTL = nSupers;
+	}
 	//Create server to listen for ready and complete signals
 	rpc::server server(8000);
 	server.bind("ready", &superReady);
@@ -46,12 +52,12 @@ int main(int argc, char* argv[]) {
 	char leafPath[MAX_PATH];
 	copyAppend(currentPath, superPath, MAX_PATH, "\\SuperPeer.exe");
 	copyAppend(currentPath, leafPath, MAX_PATH, "\\Leaf.exe");
-	//Spawn supers: ID, nSupers, leavesPerSuper, [neighbors...]
+	//Spawn supers: ID, nSupers, leavesPerSuper, TTL, [neighbors...]
 	std::cout << "Spawning Supers" << std::endl;
 	int nextId = 1;
 	for (int i = 0; i < nSupers; i++) {
 		int id = nextId++;
-		std::string args = std::to_string(id) + " " + std::to_string(nSupers) + " " + std::to_string(leavesPerSuper);
+		std::string args = std::to_string(id) + " " + std::to_string(nSupers) + " " + std::to_string(leavesPerSuper) + " " + std::to_string(TTL);
 		if (topology == ALL_TO_ALL) {
 			for (int neighborId = 1; neighborId <= nSupers; neighborId++) {
 				if (neighborId != id) {
@@ -70,7 +76,7 @@ int main(int argc, char* argv[]) {
 		run(superPath, args);
 		//std::cout << "Super args: " << args << std::endl;
 	}
-	//Spawn leaves: ID, superID, nSupers, [initial files...], "requests", [requests...]
+	//Spawn leaves: ID, superID, nSupers, TTL, [initial files...], "requests", [requests...]
 	std::vector<int> numbers(nSupers * leavesPerSuper * filesPerLeaf / duplicationFactor);
 	std::unordered_set<int> used;
 	std::iota(numbers.begin(), numbers.end(), 1);
@@ -108,7 +114,7 @@ int main(int argc, char* argv[]) {
 			requestFiles.insert(requestNum);
 		}
 		//Build args and spawn leaf
-		std::string args = std::to_string(nextId++) + " " + std::to_string(i % nSupers + 1) + " " + std::to_string(nSupers);
+		std::string args = std::to_string(nextId++) + " " + std::to_string(i % nSupers + 1) + " " + std::to_string(nSupers) + " " + std::to_string(TTL);
 		for (auto initial : initialFiles[i]) {
 				args += " " + std::to_string(initial) + ".txt";
 		}
@@ -117,7 +123,7 @@ int main(int argc, char* argv[]) {
 			args += " " + std::to_string(request) + ".txt";
 		}
 		run(leafPath, args);
-		//std::cout << args << std::endl;
+		//std::cout << "Leaf args: " << args << std::endl;
 	}
 	//Wait for all supers to give ready signal
 	std::unique_lock<std::mutex> unique(countLock);

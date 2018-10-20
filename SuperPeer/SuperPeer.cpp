@@ -21,7 +21,7 @@ void end();
 void ping();
 void dumpIndex();
 
-int id, nSupers, nChildren;
+int id, nSupers, nChildren, startTTL;
 std::unordered_map<int, rpc::client*> neighborClients;
 std::unordered_map<int, rpc::client*> leafClients;
 
@@ -38,12 +38,13 @@ std::condition_variable ready;
 
 int main(int argc, char* argv[]) {
 	//Parse args for ID, nChildren, neighbors
-	if (argc < 2) {
+	if (argc < 3) {
 		return -1;
 	}
 	id = std::stoi(argv[0]);
 	nSupers = std::stoi(argv[1]);
 	nChildren = std::stoi(argv[2]);
+	startTTL = std::stoi(argv[3]);
 	//Start server for file registrations, pings, ready signals, queries, queryhits, and end signal
 	rpc::server server(8000 + id);
 	server.bind("ready", &leafReady);
@@ -55,7 +56,7 @@ int main(int argc, char* argv[]) {
 	server.async_run(4);
 	std::cout << "Im a super with ID " << id << std::endl;
 	//Create clients for neighbors once they're online
-	for (int i = 3; i < argc; i++) {
+	for (int i = 4; i < argc; i++) {
 		int neighborId = std::stoi(argv[i]);
 		rpc::client *neighborClient = new rpc::client("localhost", 8000 + neighborId);
 		neighborClient->set_timeout(50);
@@ -95,41 +96,52 @@ int main(int argc, char* argv[]) {
 
 void query(int sender, std::array<int, 2> messageId, int TTL, std::string fileName) {
 	historyLock.lock();
-	if (queryHitIds.find(messageId) == queryHitIds.end()) {
-		//If we've seen the message before, skip query handling
-		std::unordered_set<int> &senders = messageHistory[messageId];
-		if (senders.empty()) {
-			//Check own index for the file
-			auto leaves = fileIndex.find(fileName);
-			if (leaves != fileIndex.end()) {
-				//Reply with queryHit
-				//std::cout << "File found! Replying to " << sender << " about " << fileName << std::endl;
-				getClient(sender)->async_call("queryHit", id, messageId, nSupers, fileName, leaves->second);
-				queryHitIds.insert(messageId);
-			}
-			else if (TTL - 1 > 0) {
-				//Forward query to neighbors
-				//std::cout << "Forwarding query for " << fileName << " to neighbors: ";
-				for (auto &neighbor : neighborClients) {
-					if (neighbor.first != sender) {
-						std::cout << " " << neighbor.first;
-						neighbor.second->async_call("query", id, messageId, TTL - 1, fileName);
-					}
-				}
-				std::cout << std::endl;
-			}
-		}
+	std::cout << sender << ": " << fileName << " - ";
+	//If we've seen the message before, skip query handling
+	std::unordered_set<int> &senders = messageHistory[messageId];
+	if (senders.empty()) {
 		//Add new sender to history
 		senders.insert(sender);
+		historyLock.unlock();
+		//Check own index for the file
+		indexLock.lock();
+		const auto indexEntry = fileIndex.find(fileName);
+		if (indexEntry != fileIndex.end()) {
+			//Reply with queryHit
+			//std::cout << "File found! Replying to " << sender << " about " << fileName << std::endl;
+			std::cout << "hit" << std::endl;
+			getClient(sender)->async_call("queryHit", id, messageId, startTTL, fileName, indexEntry->second);
+			queryHitIds.insert(messageId);
+		}
+		else if (TTL - 1 > 0) {
+			//Forward query to neighbors
+			std::cout << "miss" << std::endl;
+			//std::cout << "Forwarding query for " << fileName << " to neighbors: ";
+			for (auto &neighbor : neighborClients) {
+				if (neighbor.first != sender) {
+					//std::cout << " " << neighbor.first;
+					neighbor.second->async_call("query", id, messageId, TTL - 1, fileName);
+				}
+			}
+			//std::cout << std::endl;
+		}
+		indexLock.unlock();
 	}
-	historyLock.unlock();
+	else {
+		std::cout << "skipped" << std::endl;
+		//Add new sender to history
+		senders.insert(sender);
+		historyLock.unlock();
+	}
+	
 }
 
 void queryHit(int sender, std::array<int, 2> messageId, int TTL, std::string fileName, std::vector<int> leaves) {
 	historyLock.lock();
+	std::cout << sender << ">>" << fileName << ">> ";
 	if (queryHitIds.find(messageId) == queryHitIds.end()) {
 		//std::cout << "Propagating hit for " << fileName << " to: ";
-		auto senders = messageHistory.find(messageId);
+		const auto senders = messageHistory.find(messageId);
 		if (senders != messageHistory.end() && TTL - 1 > 0) {
 			//Forward queryHit to anyone who sent query with messageId
 			for (int querySenderId : senders->second) {
@@ -141,6 +153,7 @@ void queryHit(int sender, std::array<int, 2> messageId, int TTL, std::string fil
 		}
 		queryHitIds.insert(messageId);
 	}
+	std::cout << "|" << std::endl;
 	historyLock.unlock();
 }
 
@@ -156,17 +169,21 @@ void add(int leafId, std::string fileName) {
 
 rpc::client* getClient(int clientId) {
 	//Return a client - neighbor or leaf
+	//std::cout << "Client: " << clientId;
 	const auto neighborIter = neighborClients.find(clientId);
 	if (neighborIter != neighborClients.end()) {
+		//std::cout << "neighbor" << std::endl;
 		return neighborIter->second;
 	}
 	const auto leafIter = leafClients.find(clientId);
 	if (leafIter != leafClients.end()) {
+		//std::cout << "leaf" << std::endl;
 		return leafIter->second;
 	}
 	//If the client doesn't exist yet, we assume its a leaf
 	rpc::client *client = new rpc::client("localhost", 8000 + clientId);
 	leafClients.insert({ clientId, client });
+	//std::cout << "new" << std::endl;
 	return leafClients.find(clientId)->second;
 }
 
